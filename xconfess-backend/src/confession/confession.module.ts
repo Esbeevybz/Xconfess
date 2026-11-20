@@ -13,6 +13,8 @@ import { AnonymousConfession } from './entities/confession.entity';
 import { Tag } from './entities/tag.entity';
 import { ConfessionTag } from './entities/confession-tag.entity';
 import { ConfessionIdempotencyRecord } from './entities/confession-idempotency-record.entity';
+import { PublicationOutboxEvent } from './outbox/entities/publication-outbox-event.entity';
+import { PublicationOutboxService } from './outbox/publication-outbox.service';
 import { AnonymousConfessionRepository } from './repository/confession.repository';
 import { ConfessionViewCacheService } from './confession-view-cache.service';
 import { TagService } from './tag.service';
@@ -64,7 +66,13 @@ class MockRedis {
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([AnonymousConfession, Tag, ConfessionTag, ConfessionIdempotencyRecord]),
+    TypeOrmModule.forFeature([
+      AnonymousConfession,
+      Tag,
+      ConfessionTag,
+      ConfessionIdempotencyRecord,
+      PublicationOutboxEvent,
+    ]),
 
     forwardRef(() => ReactionModule),
     ModerationModule,
@@ -81,6 +89,7 @@ class MockRedis {
     TagService,
     ConfessionSchedulerService,
     ConfessionIdempotencyService,
+    PublicationOutboxService,
     { provide: 'VIEW_CACHE_EXPIRY', useValue: 60 * 60 },
     // Mock Redis provider for development without Redis server
     { provide: REDIS_TOKEN, useValue: new MockRedis() },
@@ -90,6 +99,7 @@ class MockRedis {
     ConfessionService,
     ConfessionSchedulerService,
     ConfessionIdempotencyService,
+    PublicationOutboxService,
   ],
 })
 export class ConfessionModule implements NestModule {
