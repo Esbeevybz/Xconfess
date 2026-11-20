@@ -61,6 +61,103 @@ export class ConfessionSchedulerService {
     });
   }
 
+  /**
+   * Reconciles stale/overdue scheduled publications that were missed or interrupted,
+   * avoiding duplicate publications using SKIP LOCKED concurrency semantics.
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async reconcileStaleScheduledPublications(options?: {
+    thresholdMinutes?: number;
+    dryRun?: boolean;
+  }) {
+    const thresholdMinutes = options?.thresholdMinutes ?? 5;
+    const dryRun = options?.dryRun ?? false;
+    const cutoff = new Date(Date.now() - thresholdMinutes * 60 * 1000);
+
+    const outcomes = {
+      attempted: 0,
+      reconciled: 0,
+      terminal: 0,
+      skipped: 0,
+      details: [] as Array<{ id: string; outcome: string; reason?: string }>,
+    };
+
+    await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(AnonymousConfession);
+
+      // Concurrently safe lock: skips rows locked by active publish workers
+      const staleConfessions = await repo
+        .createQueryBuilder('confession')
+        .setLock('pessimistic_write')
+        .setOnLocked('skip_locked')
+        .where('confession.status = :status', { status: 'scheduled' })
+        .andWhere('confession.publishAt <= :cutoff', { cutoff })
+        .getMany();
+
+      outcomes.attempted = staleConfessions.length;
+
+      for (const confession of staleConfessions) {
+        if (confession.isDeleted) {
+          if (!dryRun) {
+            await repo.update(confession.id, {
+              status: 'failed',
+            });
+          }
+          outcomes.terminal++;
+          outcomes.details.push({
+            id: confession.id,
+            outcome: 'terminal',
+            reason: 'Confession was deleted prior to publication',
+          });
+          continue;
+        }
+
+        if (dryRun) {
+          outcomes.reconciled++;
+          outcomes.details.push({
+            id: confession.id,
+            outcome: 'would_publish',
+          });
+          continue;
+        }
+
+        try {
+          const res = await repo
+            .createQueryBuilder()
+            .update(AnonymousConfession)
+            .set({
+              status: 'published',
+              created_at: new Date(),
+            })
+            .where('id = :id', { id: confession.id })
+            .andWhere('status = :status', { status: 'scheduled' })
+            .execute();
+
+          if (res.affected && res.affected > 0) {
+            outcomes.reconciled++;
+            outcomes.details.push({ id: confession.id, outcome: 'published' });
+            this.logger.log(`Reconciled stale scheduled publication ${confession.id}`);
+          } else {
+            outcomes.skipped++;
+            outcomes.details.push({ id: confession.id, outcome: 'skipped' });
+          }
+        } catch (err: any) {
+          outcomes.terminal++;
+          outcomes.details.push({
+            id: confession.id,
+            outcome: 'failed',
+            reason: err.message,
+          });
+          await repo.update(confession.id, {
+            status: 'failed',
+          });
+        }
+      }
+    });
+
+    return outcomes;
+  }
+
   async scheduleConfession(
     confessionId: string,
     publishAt: string | Date,

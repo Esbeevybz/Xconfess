@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as crypto from 'crypto';
@@ -494,6 +495,53 @@ export class SearchDiscoveryService {
     }
 
     return results;
+  }
+
+  private cachedFacets: { data: { topic: string; count: number }[]; expiresAt: number } | null = null;
+
+  async getPublicTopicFacets(limit = 25): Promise<{ topic: string; count: number }[]> {
+    const now = Date.now();
+    if (this.cachedFacets && this.cachedFacets.expiresAt > now) {
+      return this.cachedFacets.data.slice(0, limit);
+    }
+
+    const safeLimit = Math.min(50, Math.max(1, limit));
+    const rawCounts = await this.savedSearchRepo.manager.query(
+      `SELECT t.name AS topic, COUNT(ct.id)::int AS count
+       FROM tags t
+       JOIN confession_tags ct ON ct.tag_id = t.id
+       JOIN anonymous_confessions c ON c.id = ct.confession_id
+       WHERE c.is_deleted = false
+         AND c.is_hidden = false
+         AND c.moderation_status = 'approved'
+       GROUP BY t.name
+       ORDER BY count DESC
+       LIMIT $1`,
+      [safeLimit],
+    ).catch(() => []);
+
+    const facets = (rawCounts || []).map((row: any) => ({
+      topic: row.topic,
+      count: Number(row.count) || 0,
+    }));
+
+    this.cachedFacets = {
+      data: facets,
+      expiresAt: now + 60_000, // 60s cache
+    };
+
+    return facets;
+  }
+
+  invalidateTopicFacetsCache(): void {
+    this.cachedFacets = null;
+  }
+
+  @OnEvent('confession.moderated')
+  @OnEvent('confession.deleted')
+  @OnEvent('confession.restored')
+  handleConfessionLifecycleChange() {
+    this.invalidateTopicFacetsCache();
   }
 }
 
