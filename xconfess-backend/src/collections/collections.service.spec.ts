@@ -3,43 +3,47 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { CollectionsService } from './collections.service';
 import { UserCollection } from './entities/user-collection.entity';
-import { UserCollectionItem } from './entities/user-collection-item.entity';
-import { BadRequestException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 
-describe('CollectionsService - Bulk Deletion and Associations', () => {
+describe('CollectionsService', () => {
   let service: CollectionsService;
   let collectionRepo: any;
-  let itemRepo: any;
   let dataSource: any;
+
+  const mockCollection: UserCollection = {
+    id: 'col-1',
+    userId: 5,
+    name: 'Favorite Confessions',
+    description: 'Personal favorites',
+    displayOrder: 0,
+    isPrivate: true,
+    version: 2,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
 
   beforeEach(async () => {
     collectionRepo = {
       create: jest.fn().mockImplementation((dto) => ({ ...dto, id: 'col-1' })),
       save: jest.fn().mockImplementation((c) => Promise.resolve(c)),
-      findOne: jest.fn(),
-      find: jest.fn().mockResolvedValue([]),
-      remove: jest.fn(),
-    };
-
-    itemRepo = {
-      delete: jest.fn().mockResolvedValue(undefined),
+      findOne: jest.fn().mockResolvedValue(mockCollection),
+      find: jest.fn().mockResolvedValue([mockCollection]),
+      remove: jest.fn().mockResolvedValue(mockCollection),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getRawOne: jest.fn().mockResolvedValue({ maxOrder: 2 }),
+      }),
     };
 
     dataSource = {
-      transaction: jest.fn().mockImplementation((cb) =>
-        cb({
-          find: jest.fn().mockResolvedValue([{ id: 'c-1', userId: 10 }]),
-          delete: jest.fn().mockResolvedValue(undefined),
-          remove: jest.fn().mockResolvedValue(undefined),
-        }),
-      ),
+      transaction: jest.fn().mockImplementation((cb) => cb({ update: jest.fn().mockResolvedValue(undefined) })),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CollectionsService,
         { provide: getRepositoryToken(UserCollection), useValue: collectionRepo },
-        { provide: getRepositoryToken(UserCollectionItem), useValue: itemRepo },
         { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
@@ -47,22 +51,32 @@ describe('CollectionsService - Bulk Deletion and Associations', () => {
     service = module.get<CollectionsService>(CollectionsService);
   });
 
-  it('rejects bulk deletion batches exceeding the 25 limit', async () => {
-    const tooMany = Array.from({ length: 30 }, (_, i) => `uuid-${i}`);
-    await expect(
-      service.bulkDeleteCollections(10, { collectionIds: tooMany }),
-    ).rejects.toThrow(BadRequestException);
+  it('should create private collection with incremental displayOrder', async () => {
+    const res = await service.createCollection(5, { name: 'Reflections' });
+    expect(res.displayOrder).toBe(3);
+    expect(res.isPrivate).toBe(true);
+    expect(collectionRepo.save).toHaveBeenCalled();
   });
 
-  it('safely handles repeated calls idempotently when some collections are already deleted', async () => {
-    const result = await service.bulkDeleteCollections(10, {
-      collectionIds: ['c-1', 'c-already-deleted'],
+  it('should enforce optimistic concurrency checks on updates', async () => {
+    collectionRepo.findOne.mockResolvedValueOnce(mockCollection); // version is 2
+
+    await expect(
+      service.updateCollection(5, 'col-1', {
+        name: 'New Name',
+        expectedVersion: 1, // outdated version
+      }),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('should prevent access to other users collections', async () => {
+    collectionRepo.findOne.mockResolvedValueOnce({
+      ...mockCollection,
+      userId: 999,
     });
 
-    expect(result.requestedCount).toBe(2);
-    expect(result.deletedCount).toBe(1);
-    expect(result.alreadyDeletedCount).toBe(1);
-    expect(result.deletedIds).toEqual(['c-1']);
-    expect(result.alreadyDeletedIds).toEqual(['c-already-deleted']);
+    await expect(service.getCollectionById(5, 'col-1')).rejects.toThrow(
+      ForbiddenException,
+    );
   });
 });

@@ -6,9 +6,7 @@ import {
   UpdateDateColumn,
   Index,
   VersionColumn,
-  OneToMany,
 } from 'typeorm';
-import { UserCollectionItem } from './user-collection-item.entity';
 
 @Entity('user_collections')
 export class UserCollection {
@@ -40,7 +38,4 @@ export class UserCollection {
 
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
-
-  @OneToMany(() => UserCollectionItem, (item) => item.collection)
-  items: UserCollectionItem[];
 }

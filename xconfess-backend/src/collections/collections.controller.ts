@@ -23,7 +23,6 @@ import {
   UpdateCollectionDto,
   ReorderCollectionsDto,
 } from './dto/collection.dto';
-import { BulkDeleteCollectionsDto } from './dto/bulk-delete-collections.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @ApiTags('Collections')
@@ -79,16 +78,6 @@ export class CollectionsController {
     @Body() dto: ReorderCollectionsDto,
   ) {
     return this.collectionsService.reorderCollections(req.user.id, dto);
-  }
-
-  @Post('bulk-delete')
-  @ApiOperation({ summary: 'Owner-safe bulk deletion for private collections (bounded to 25)' })
-  @ApiResponse({ status: 200, description: 'Bulk deletion result with idempotent safety.' })
-  async bulkDeleteCollections(
-    @Request() req: any,
-    @Body() dto: BulkDeleteCollectionsDto,
-  ) {
-    return this.collectionsService.bulkDeleteCollections(req.user.id, dto);
   }
 
   @Delete(':id')

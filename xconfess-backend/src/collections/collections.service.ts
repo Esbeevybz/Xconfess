@@ -3,38 +3,24 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
-  BadRequestException,
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { UserCollection } from './entities/user-collection.entity';
-import { UserCollectionItem } from './entities/user-collection-item.entity';
 import {
   CreateCollectionDto,
   UpdateCollectionDto,
   ReorderCollectionsDto,
 } from './dto/collection.dto';
-import { BulkDeleteCollectionsDto } from './dto/bulk-delete-collections.dto';
-
-export interface BulkDeleteResult {
-  requestedCount: number;
-  deletedCount: number;
-  alreadyDeletedCount: number;
-  deletedIds: string[];
-  alreadyDeletedIds: string[];
-}
 
 @Injectable()
 export class CollectionsService {
   private readonly logger = new Logger(CollectionsService.name);
-  private readonly MAX_BULK_DELETE = 25;
 
   constructor(
     @InjectRepository(UserCollection)
     private readonly collectionRepo: Repository<UserCollection>,
-    @InjectRepository(UserCollectionItem)
-    private readonly itemRepo: Repository<UserCollectionItem>,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -95,6 +81,7 @@ export class CollectionsService {
   ): Promise<UserCollection> {
     const collection = await this.getCollectionById(userId, id);
 
+    // Optimistic concurrency check
     if (
       dto.expectedVersion !== undefined &&
       dto.expectedVersion !== collection.version
@@ -102,7 +89,7 @@ export class CollectionsService {
       throw new ConflictException({
         code: 'COLLECTION_CONCURRENCY_CONFLICT',
         message:
-          'Collection has been updated by another operation. Please refresh and retry.',
+          'Collection has been updated by another operation. Refresh and retry.',
         currentVersion: collection.version,
         expectedVersion: dto.expectedVersion,
       });
@@ -123,6 +110,7 @@ export class CollectionsService {
     const userCollections = await this.getCollections(userId);
     const existingMap = new Map(userCollections.map((c) => [c.id, c]));
 
+    // Validate that all supplied IDs belong to caller
     for (const id of dto.collectionIds) {
       if (!existingMap.has(id)) {
         throw new NotFoundException({
@@ -145,62 +133,5 @@ export class CollectionsService {
   async deleteCollection(userId: number, id: string): Promise<void> {
     const collection = await this.getCollectionById(userId, id);
     await this.collectionRepo.remove(collection);
-  }
-
-  /**
-   * Owner-safe bulk deletion for private collections (Issue #399).
-   * Executes in bounded transactions, preserves underlying confession records,
-   * and handles repeated requests idempotently.
-   */
-  async bulkDeleteCollections(
-    userId: number,
-    dto: BulkDeleteCollectionsDto,
-  ): Promise<BulkDeleteResult> {
-    if (dto.collectionIds.length > this.MAX_BULK_DELETE) {
-      throw new BadRequestException({
-        code: 'MAX_BATCH_SIZE_EXCEEDED',
-        message: `Bulk delete batch cannot exceed ${this.MAX_BULK_DELETE} collections`,
-      });
-    }
-
-    const uniqueIds = Array.from(new Set(dto.collectionIds));
-    const deletedIds: string[] = [];
-    const alreadyDeletedIds: string[] = [];
-
-    await this.dataSource.transaction(async (manager) => {
-      const ownedCollections = await manager.find(UserCollection, {
-        where: {
-          id: In(uniqueIds),
-          userId,
-        },
-      });
-
-      const ownedMap = new Map(ownedCollections.map((c) => [c.id, c]));
-
-      for (const id of uniqueIds) {
-        const col = ownedMap.get(id);
-        if (col) {
-          // Delete collection associations (preserves underlying confessions)
-          await manager.delete(UserCollectionItem, { collectionId: id });
-          await manager.remove(UserCollection, col);
-          deletedIds.push(id);
-        } else {
-          // Idempotent safe handling for repeated/already deleted calls
-          alreadyDeletedIds.push(id);
-        }
-      }
-    });
-
-    this.logger.log(
-      `[AUDIT] COLLECTIONS_BULK_DELETED userId=${userId} deleted=${deletedIds.length} alreadyDeleted=${alreadyDeletedIds.length}`,
-    );
-
-    return {
-      requestedCount: uniqueIds.length,
-      deletedCount: deletedIds.length,
-      alreadyDeletedCount: alreadyDeletedIds.length,
-      deletedIds,
-      alreadyDeletedIds,
-    };
   }
 }

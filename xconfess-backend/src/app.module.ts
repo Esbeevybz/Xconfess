@@ -16,10 +16,18 @@ import { CapabilitiesModule } from './auth/capabilities/capabilities.module';
 import { ConfessionModule } from './confession/confession.module';
 import { ConfessionDraftModule } from './confession-draft/confession-draft.module';
 import { SearchDiscoveryModule } from './search-discovery/search-discovery.module';
+import { WebhookModule } from './webhooks/webhook.module';
+import { ApiDeprecationModule } from './deprecation/api-deprecation.module';
+import { TopicModule } from './topic/topic.module';
 import { CommentModule } from './comment/comment.module';
 import { ReactionModule } from './reaction/reaction.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core';
+import { CollectionsModule } from './collections/collections.module';
+import { BulkReadModule } from './bulk-reads/bulk-read.module';
+import { ContentTypeLimitsMiddleware } from './middleware/content-type-limits.middleware';
+import { LocaleNegotiatorService } from './i18n-errors/locale-negotiator.service';
+import { I18nExceptionFilter } from './i18n-errors/i18n-exception.filter';
 import throttleConfig from './config/throttle.config';
 import exportConfig from './config/export.config';
 import integrityConfig from './config/integrity.config';
@@ -155,6 +163,9 @@ import { RateLimitGuard } from './rate-limit/rate-limit.guard';
     ConfessionModule,
     ConfessionDraftModule,
     SearchDiscoveryModule,
+    WebhookModule,
+    ApiDeprecationModule,
+    TopicModule,
     ReactionModule,
     CommentModule,
     MessagesModule,
@@ -203,6 +214,11 @@ import { RateLimitGuard } from './rate-limit/rate-limit.guard';
       provide: APP_INTERCEPTOR,
       useClass: ResponseSizeInterceptor,
     },
+    LocaleNegotiatorService,
+    {
+      provide: APP_FILTER,
+      useClass: I18nExceptionFilter,
+    },
   ],
 })
 export class AppModule implements NestModule {
@@ -213,6 +229,11 @@ export class AppModule implements NestModule {
     // req.requestId, and so it's set even if SanitizationMiddleware throws.
     // CSRFMiddleware applies to every route and enforces double-submit
     // tokens on cookie-authenticated mutations.
-    consumer.apply(RequestIdMiddleware, SanitizationMiddleware, CSRFMiddleware).forRoutes('*');
+    consumer.apply(
+      RequestIdMiddleware,
+      ContentTypeLimitsMiddleware,
+      SanitizationMiddleware,
+      CSRFMiddleware,
+    ).forRoutes('*');
   }
 }
